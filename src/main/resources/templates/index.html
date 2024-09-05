@@ -18,6 +18,19 @@
             height: 100vh;
         }
 
+        #login-container {
+            width: 100%;
+            max-width: 480px;
+            background: #ffffff;
+            border-radius: 30px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            margin: 10px;
+            padding: 10px;
+        }
+
         #chat-container {
             width: 100%;
             max-width: 480px;
@@ -113,7 +126,7 @@
             box-shadow: 0 0 0 2px rgba(38, 143, 255, 0.3);
         }
 
-        h2 {
+        #name-login, #name-chat {
             color: #333;
             font-size: 24px;
             font-weight: 700; /* Bold */
@@ -123,25 +136,98 @@
             border-radius: 10px;
             text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5); /* Shadow effect */
         }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-10px); }
+            40%, 80% { transform: translateX(10px); }
+        }
+
+        .shake {
+            animation: shake 0.3s ease-in-out;
+        }
+
+        #dis-username {
+            color: #333;
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+            margin-top: -25px;
+            margin-bottom: 20px;
+            padding: 5px;
+            border-radius: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        .error-message {
+            color: red;
+            font-size: 14px;
+            margin-top: -12px;
+            margin-bottom: 10px;
+            margin-left: 15px;
+            display: none;
+            animation: shake 0.3s ease-in-out;
+        }
     </style>
 </head>
 <body>
-<div id="chat-container">
-    <h2>WELCOME TO TEMP CHAT</h2>
-    <input type="text" id="username" placeholder="Enter your name" />
+<div id="login-container">
+    <h2 id="name-login">WELCOME TO TEMP CHAT</h2>
+    <input type="text" id="usernameInput" placeholder="Enter your name" />
+    <div id="usernameError" class="error-message"></div>
+    <button onclick="connect()">Connect</button>
+</div>
+<div id="chat-container" style="display:none;">
+    <h2 id="name-chat">WELCOME TO TEMP CHAT</h2>
+    <span id="dis-username"></span>
+    <input type="text" id="recipient" placeholder="Enter recipient" />
+    <div id="recipientError" class="error-message"></div>
     <input type="text" id="messageInput" placeholder="Enter your message" />
     <button onclick="sendMessage()">Send</button>
     <div id="messages"></div>
 </div>
+
 <script>
     var stompClient = null;
+    var subscriptions = JSON.parse(localStorage.getItem('subscriptions')) || {};  // Load from localStorage or initialize
+
+    function showError(errorId, message) {
+        var errorContainer = document.getElementById(errorId);
+        errorContainer.textContent = message;
+        errorContainer.style.display = 'block';
+        setTimeout(function() {
+            errorContainer.style.display = 'none';
+        }, 5000);
+    }
 
     function connect() {
+        var emUsername = document.getElementById('usernameInput');
+        var username = emUsername.value.trim();
+
+        if (!username) { // Check if the username is empty
+            showError('usernameError', 'Please enter a username');
+            return;
+        }
+        subscriptions = JSON.parse(localStorage.getItem('subscriptions')) || {};
+        if (subscriptions[username]) {
+            console.log('You are already connected.');
+            showError('usernameError', `The username '${username}' is already taken.`);
+            return;
+        }
+        subscriptions[username] = true;
+        localStorage.setItem('subscriptions', JSON.stringify(subscriptions));
+        document.getElementById('login-container').style.display = 'none';
+        document.getElementById('chat-container').style.display = 'flex';
+        document.getElementById('dis-username').textContent = username;
+        connectToWebSocket(username);
+    }
+
+    function connectToWebSocket(username) {
         var socket = new SockJS('/chat');
         stompClient = Stomp.over(socket);
         stompClient.connect({}, function (frame) {
             console.log('Connected: ' + frame);
-            stompClient.subscribe('/topic/messages', function (message) {
+            stompClient.subscribe('/topic/messages/' + username, function (message) {
                 console.log('Message received:', message.body);
                 try {
                     var parsedMessage = JSON.parse(message.body);
@@ -150,44 +236,79 @@
                     console.error('Error parsing message:', e);
                 }
             });
+            console.log('Subscribed to /topic/messages/' + username);
+            stompClient.onDisconnect = function () {
+                console.log('Disconnected');
+                handleDisconnection(username);
+            };
         }, function (error) {
             console.error('Connection error:', error);
+            handleDisconnection(username);
         });
     }
 
+    function handleDisconnection(username) {
+        delete subscriptions[username];
+        localStorage.setItem('subscriptions', JSON.stringify(subscriptions));
+    }
+
+    window.onbeforeunload = function () {
+        handleDisconnection(document.getElementById('usernameInput').value.trim());
+    };
+
     function sendMessage() {
         var messageInput = document.getElementById('messageInput');
+        var usernameInput = document.getElementById('usernameInput');
+        var receiverInput = document.getElementById('recipient');
+
         var messageContent = {
-            sender: document.getElementById('username').value,
-            content: messageInput.value
+            sender: usernameInput.value,
+            content: messageInput.value,
+            receiver: receiverInput.value,
         };
-        if (messageContent.sender && messageContent.content) {
-            stompClient.send("/app/sendMessage", {}, JSON.stringify(messageContent));
+
+        if (messageContent.sender && messageContent.content && messageContent.receiver) {
+            stompClient.send("/app/send", {}, JSON.stringify(messageContent)); // Adjust destination
             messageInput.value = ""; // Clear the input field after sending the message
+            showMessage(messageContent, true);
         } else {
-            console.warn('Username or message content is empty');
+            console.warn('Username, receiver, or message content is empty');
         }
     }
 
-    function showMessage(message) {
+    function showMessage(message, isSent) {
         var messagesDiv = document.getElementById('messages');
         var messageElement = document.createElement('div');
-        var messageClass = message.sender === document.getElementById('username').value ? 'sent' : 'received';
+        var messageClass = isSent ? 'sent' : 'received';
+        var timestamp = formatDate(new Date());
         messageElement.className = messageClass;
-        messageElement.innerHTML = "<span class='sender'>" + message.sender + "</span>" +
-            message.content + "<br><span class='timestamp'>" + message.timestamp + "</span>";
+        messageElement.innerHTML = "<span class='sender'>" + message.sender + "</span>" + message.content + "<br><span class='timestamp'>" + timestamp + "</span>";
         messagesDiv.appendChild(messageElement);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
-    // Add event listener to send message on Enter key press
+    function formatDate(date) {
+        var year = date.getFullYear();
+        var month = String(date.getMonth() + 1).padStart(2, '0');
+        var day = String(date.getDate()).padStart(2, '0');
+        var hours = String(date.getHours()).padStart(2, '0');
+        var minutes = String(date.getMinutes()).padStart(2, '0');
+        var seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    }
+
+    document.getElementById('usernameInput').addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+            connect();
+        }
+    });
+
     document.getElementById('messageInput').addEventListener('keydown', function(event) {
         if (event.key === 'Enter') {
             sendMessage();
         }
     });
 
-    connect();
 </script>
 </body>
 </html>
